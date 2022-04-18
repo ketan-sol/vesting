@@ -14,13 +14,11 @@ contract MyToken is ERC20, Ownable {
         _mint(owner(), _initialSupply * (10**decimals()));
     }
 
-    //mint tokensBits
     function mint(uint256 _tokenSupply) public onlyOwner {
         _mint(owner(), _tokenSupply * (10**decimals()));
     }
 
-    //burn Token Bits
-    function burn(uint256 _tokenBitsAmount) public onlyOwner {
-        _burn(owner(), _tokenBitsAmount);
+    function burn(uint256 _tokenBurnAmount) public onlyOwner {
+        _burn(owner(), _tokenBurnAmount);
     }
 }
