@@ -36,13 +36,17 @@ describe('Vesting', () => {
       }
     }
   };
+  before(async function () {
+    Token = await ethers.getContractFactory('MyToken');
+    Vesting = await ethers.getContractFactory('Vesting');
+  });
 
   beforeEach(async () => {
     [deployer, addr1, addr2, ...addrs] = await ethers.getSigners();
-    MyToken = await ethers.getContractFactory('MyToken');
-    Vesting = await ethers.getContractFactory('Vesting');
     token = await Token.deploy('MyToken', 'MTK', initialTokenSupply);
+    await token.deployed();
     vesting = await Vesting.deploy(token.address);
+    await vesting.deployed();
 
     const totalSupply = await token.totalSupply();
 
@@ -57,11 +61,11 @@ describe('Vesting', () => {
     await token.transfer(vesting.address, vestedAmount);
   });
 
-  it('should hhave tokens for vesting', async () => {
+  it('should have tokens for vesting', async () => {
     const Roles = 3;
     let vestedTokensForRoles = BigNumber.from(0);
     for (i = 0; i < Roles; i++) {
-      const tokenVestedForEachRole = await vesting.totalTokensForRokle(i);
+      const tokenVestedForEachRole = await vesting.totalTokensForRole(i);
       vestedTokensForRoles = BigNumber.from(vestedTokensForRoles).add(
         BigNumber.from(tokenVestedForEachRole)
       );
@@ -74,12 +78,13 @@ describe('Vesting', () => {
   it('only owner should be able to add beneficiaries', async () => {
     await expect(
       vesting.connect(addr1).addBeneficiary(addrs[0].address, 0)
-    ).to.be.revertedWith('You are not owner. Only owner can add beneficiary.');
+    ).to.be.revertedWith('Ownable: caller is not the owner');
   });
 
   it('should be able to add beneficiary', async () => {
     await expect(vesting.addBeneficiary(addr1.address, 0)).to.emit(
-      'Beneficiary added'
+      vesting,
+      'addedBeneficiary'
     );
   });
 
@@ -92,14 +97,14 @@ describe('Vesting', () => {
 
   it('only owner can start vesting schedule', async () => {
     await expect(
-      vesting.connect(addr1).startVesting(cliff, duration)
-    ).to.be.revertedWith('Only owner  can start vesting schedule ');
+      vesting.connect(addr1).createSchedule(cliff, duration)
+    ).to.be.revertedWith('Ownable: caller is not the owner');
   });
 
   it('should check if vesting started or not', async () => {
-    await vesting.startVesting(cliff, duration);
-    await expect(vesting.startVesting(cliff, duration)).to.be.revertedWith(
-      'Vesting schedule already started'
+    await vesting.createSchedule(cliff, duration);
+    await expect(vesting.createSchedule(cliff, duration)).to.be.revertedWith(
+      'Schedule already started'
     );
   });
 
@@ -113,29 +118,30 @@ describe('Vesting', () => {
 
   it('should not be able to withdraw token in cliff period or genereated amount is 0', async () => {
     await addBeneficiaryRoles(addrs);
-    await vesting.startVesting(cliff, duration);
+    await vesting.createSchedule(cliff, duration);
     await expect(vesting.withdraw(0)).to.be.revertedWith(
-      'No tokens to release'
+      'No tokens left for release'
     );
   });
 
   it('should be able to withdraw token after cliff period', async () => {
     await addBeneficiaryRoles(addrs);
-    await vesting.startVesting(cliff, duration);
-    await ethers.provider.send('evm_increaTime', [cliff + 24 * 60 * 60]); //1day =24*60*60 seconds
+    await vesting.createSchedule(cliff, duration);
+    await ethers.provider.send('evm_increaseTime', [cliff + 24 * 60 * 60 * 1]); //1day =24*60*60 seconds
     await ethers.provider.send('evm_mine');
-    await expect(vesting.withdraw(0)).To.emit(vesting, 'Token was withdrawn');
+    console.log(await vesting.tokenVestedForParticularRole(0));
+    await expect(vesting.withdraw(0)).to.emit(vesting, 'withdrawToken');
   });
 
   it('should receive token after withdrawl', async () => {
     await addBeneficiaryRoles(addrs);
-    await vesting.startVesting(cliff, duration);
+    await vesting.createSchedule(cliff, duration);
     await ethers.provider.send('evm_increaseTime', [cliff + duration / 2]);
     await ethers.provider.send('evm_mine');
     const contractBalanceBeforeWithdrawal = await token.balanceOf(
       vesting.address
     );
-    const allAdvisors = await vesting.getAllBeneficiaries(0);
+    const allAdvisors = await vesting.getBeneficiaries(0);
     const balanceOfOneAdvisorBeforeWithdrawal = await token.balanceOf(
       allAdvisors[0]
     );
@@ -167,7 +173,7 @@ describe('Vesting', () => {
 
   it('each role address should get equal tokens', async () => {
     await addBeneficiaryRoles(addrs);
-    await vesting.startVesting(cliff, duration);
+    await vesting.createSchedule(cliff, duration);
     await ethers.provider.send('evm_increaseTime', [cliff + duration / 2]);
     await ethers.provider.send('evm_mine');
     await vesting.withdraw(0);

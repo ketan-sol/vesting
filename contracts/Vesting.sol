@@ -97,7 +97,7 @@ contract Vesting is Ownable {
     }
 
     function tokenVestedForParticularRole(Roles _role)
-        internal
+        public
         view
         returns (uint256 tokenVested)
     {
