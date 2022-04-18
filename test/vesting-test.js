@@ -1,8 +1,8 @@
-const { expect } = require("chai");
-const { BigNumber } = require("ethers");
-const { ethers } = require("hardhat");
+const { expect } = require('chai');
+const { BigNumber } = require('ethers');
+const { ethers } = require('hardhat');
 
-describe("MyERC20vesting Contract", () => {
+describe('Vesting', () => {
   let deployer;
   let addr1;
   let addr2;
@@ -14,25 +14,167 @@ describe("MyERC20vesting Contract", () => {
 
   const initialTokenSupply = 100000000; //100 million
 
-  //cliff of vesting contract 2 days
-  const cliff = 24 * 60 * 60 * 2; //2 days cliff in seconds
-  //duration of Linear vesting 10 days
+  //cliff = 2 days
+  const cliff = 24 * 60 * 60 * 2; //in seconds
+
+  //vesting period =  10 days
   const duration = 24 * 60 * 60 * 10;
 
-  //roles = 0(advisors),1(partners),2(mentors)
+  //roles :
+  //0=advisors
+  //1=partners
+  //2=mentors
 
-  const addAllBeneficiariesRoles = async (addrs) => {
-    //adding 5 addresses in each role
+  const addBeneficiaryRoles = async (addrs) => {
     for (let i = 0; i < 15; i++) {
       if (i < 5) {
-        // role 0 = advisor
-        await vesting.addBeneficiary(addrs[i].address, 0);
+        await vesting.addBeneficiary(addrs[i].address, 0); //advisor
       } else if (i < 10) {
-        // role 1 = partner
-        vesting.addBeneficiary(addrs[i].address, 1);
+        vesting.addBeneficiary(addrs[i].address, 1); //partner
       } else {
-        //role 2 = mentor
-        vesting.addBeneficiary(addrs[i].address, 2);
+        vesting.addBeneficiary(addrs[i].address, 2); //mentor
       }
     }
   };
+
+  beforeEach(async () => {
+    [deployer, addr1, addr2, ...addrs] = await ethers.getSigners();
+    MyToken = await ethers.getContractFactory('MyToken');
+    Vesting = await ethers.getContractFactory('Vesting');
+    token = await Token.deploy('MyToken', 'MTK', initialTokenSupply);
+    vesting = await Vesting.deploy(token.address);
+
+    const totalSupply = await token.totalSupply();
+
+    //30% of total is for vesting
+    //30% => 5% advisors + 10% partners + 15% mentors
+
+    const vestedAmount = BigNumber.from(totalSupply)
+      .mul(BigNumber.from(30))
+      .div(BigNumber.from(100));
+
+    //sending token to vesting contract
+    await token.transfer(vesting.address, vestedAmount);
+  });
+
+  it('should hhave tokens for vesting', async () => {
+    const Roles = 3;
+    let vestedTokensForRoles = BigNumber.from(0);
+    for (i = 0; i < Roles; i++) {
+      const tokenVestedForEachRole = await vesting.totalTokensForRokle(i);
+      vestedTokensForRoles = BigNumber.from(vestedTokensForRoles).add(
+        BigNumber.from(tokenVestedForEachRole)
+      );
+    }
+
+    const balance = await token.balanceOf(vesting.address);
+    expect(balance).to.be.equal(vestedTokensForRoles);
+  });
+
+  it('only owner should be able to add beneficiaries', async () => {
+    await expect(
+      vesting.connect(addr1).addBeneficiary(addrs[0].address, 0)
+    ).to.be.revertedWith('You are not owner. Only owner can add beneficiary.');
+  });
+
+  it('should be able to add beneficiary', async () => {
+    await expect(vesting.addBeneficiary(addr1.address, 0)).to.emit(
+      'Beneficiary added'
+    );
+  });
+
+  it('cannot add beneficiary of same role twice', async () => {
+    await vesting.addBeneficiary(addr1.address, 0);
+    await expect(vesting.addBeneficiary(addr1.address, 0)).to.be.revertedWith(
+      'Beneficiary already exists'
+    );
+  });
+
+  it('only owner can start vesting schedule', async () => {
+    await expect(
+      vesting.connect(addr1).startVesting(cliff, duration)
+    ).to.be.revertedWith('Only owner  can start vesting schedule ');
+  });
+
+  it('should check if vesting started or not', async () => {
+    await vesting.startVesting(cliff, duration);
+    await expect(vesting.startVesting(cliff, duration)).to.be.revertedWith(
+      'Vesting schedule already started'
+    );
+  });
+
+  it('should assign address to roles', async () => {
+    await addBeneficiaryRoles(addrs);
+
+    expect(await vesting.beneficiaries(0, 0)).to.be.equal(addrs[0].address); //advisor
+    expect(await vesting.beneficiaries(1, 0)).to.be.equal(addrs[5].address); //partner
+    expect(await vesting.beneficiaries(2, 0)).to.be.equal(addrs[10].address); //mentor
+  });
+
+  it('should not be able to withdraw token in cliff period or genereated amount is 0', async () => {
+    await addBeneficiaryRoles(addrs);
+    await vesting.startVesting(cliff, duration);
+    await expect(vesting.withdraw(0)).to.be.revertedWith(
+      'No tokens to release'
+    );
+  });
+
+  it('should be able to withdraw token after cliff period', async () => {
+    await addBeneficiaryRoles(addrs);
+    await vesting.startVesting(cliff, duration);
+    await ethers.provider.send('evm_increaTime', [cliff + 24 * 60 * 60]); //1day =24*60*60 seconds
+    await ethers.provider.send('evm_mine');
+    await expect(vesting.withdraw(0)).To.emit(vesting, 'Token was withdrawn');
+  });
+
+  it('should receive token after withdrawl', async () => {
+    await addBeneficiaryRoles(addrs);
+    await vesting.startVesting(cliff, duration);
+    await ethers.provider.send('evm_increaseTime', [cliff + duration / 2]);
+    await ethers.provider.send('evm_mine');
+    const contractBalanceBeforeWithdrawal = await token.balanceOf(
+      vesting.address
+    );
+    const allAdvisors = await vesting.getAllBeneficiaries(0);
+    const balanceOfOneAdvisorBeforeWithdrawal = await token.balanceOf(
+      allAdvisors[0]
+    );
+    const balanceOfAllAdvisorsBeforeWithdrawal = BigNumber.from(
+      balanceOfOneAdvisorBeforeWithdrawal
+    ).mul(BigNumber.from(allAdvisors.length));
+
+    await vesting.withdraw(0);
+
+    const contractBalanceAfterWithdrawal = await token.balanceOf(
+      vesting.address
+    );
+    const balanceOfOneAdvisorAfterWithdrawal = await token.balanceOf(
+      allAdvisors[0]
+    );
+    const balanceOfAllAdvisorAfterWithdrawal = BigNumber.from(
+      balanceOfOneAdvisorAfterWithdrawal
+    ).mul(BigNumber.from(allAdvisors.length));
+
+    const changeInAdvisorBalance = BigNumber.from(
+      balanceOfAllAdvisorAfterWithdrawal
+    ).sub(BigNumber.from(balanceOfAllAdvisorsBeforeWithdrawal));
+    const changeInContractBalance = BigNumber.from(
+      contractBalanceBeforeWithdrawal
+    ).sub(BigNumber.from(contractBalanceAfterWithdrawal));
+
+    expect(changeInContractBalance).to.be.equal(changeInAdvisorBalance);
+  });
+
+  it('each role address should get equal tokens', async () => {
+    await addBeneficiaryRoles(addrs);
+    await vesting.startVesting(cliff, duration);
+    await ethers.provider.send('evm_increaseTime', [cliff + duration / 2]);
+    await ethers.provider.send('evm_mine');
+    await vesting.withdraw(0);
+    const advisor1 = await vesting.beneficiaries(0, 0);
+    const advisor4 = await vesting.beneficiaries(0, 3);
+    expect(await token.balanceOf(advisor1)).to.be.equal(
+      await token.balanceOf(advisor4)
+    );
+  });
+});
